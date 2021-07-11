@@ -4,15 +4,34 @@ Pytorch Implementation of Point Transformers with HAQ Automated Quantization，
 
 基于Point Transformers复现点云分割任务，并使用HAQ算法进行自动量化压缩，几乎不影响精度
 
-### Data Preparation
-Download alignment **ShapeNet** [here](https://shapenet.cs.stanford.edu/media/shapenetcore_partanno_segmentation_benchmark_v0_normal.zip) and save in `data/shapenetcore_partanno_segmentation_benchmark_v0_normal`.
+## 准备数据：
+使用连接下载 **ShapeNet** 数据集：[下载地址](https://shapenet.cs.stanford.edu/media/shapenetcore_partanno_segmentation_benchmark_v0_normal.zip) 
 
-### Pretrain
-Change which method to use in `config/partseg.yaml` and run
+下载完成后解压到 `data/shapenetcore_partanno_segmentation_benchmark_v0_normal`
+
+## 预训练：
+
+```bash
+bash run/pretrain.sh
 ```
-python train_partseg.py
+
+## 强化学习搜索：
+
+```bash
+bash run/search.sh
 ```
-### Results
 
-Net yet.
+## 量化后微调：
 
+```bash
+bash run/finutune.sh
+```
+
+## 实验结果：
+
+
+| Models                   | Accuracy | cat.mIOU | ins.mIOU |
+| ------------------------ | -------------- | ------------ | ------------ |
+| Point Transformer (paper)      |       None      |     0.837    |    0.866     |
+| Point Transformer (our-no quant)  |       0.93456      |     0.79787    |    0.83578     |
+| Point Transformer (our-0.5×preserve)  |       not yet      |     not yet    |    not yet     |
