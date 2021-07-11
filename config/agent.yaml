@@ -1,0 +1,14 @@
+suffix: indoor3d
+output: ./save
+seed: 10
+linear_quantization: False
+preserve_ratio: 0.5
+float_bit: 32
+is_pruned: False
+rmsize: 128
+finetune_flag: True
+finetune_lr: 0.001
+finetune_gamma: 0.8
+finetune_epoch: 1
+min_bit: 2
+max_bit: 8
