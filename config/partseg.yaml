@@ -13,6 +13,7 @@ num_part: 50
 num_workers: 8
 train_episode: 600
 output: ./save
+warmup: 20
 
 model: 
   nneighbor: 16

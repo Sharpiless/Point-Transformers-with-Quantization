@@ -7,9 +7,7 @@ import numpy as np
 
 import torch
 import torch.nn as nn
-import torch.nn.init as init
 import torch.nn.functional as F
-from torch.nn.parameter import Parameter
 from torch.nn.modules.utils import _single, _pair, _triple
 
 from progress.bar import Bar

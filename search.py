@@ -1,18 +1,24 @@
-import yaml
-import os
-import torch
-import importlib
-import shutil
-import numpy as np
-# training models
-from utils.dataset import PartNormalDataset
-import hydra
-# rl search
-from haq_lib.lib.env.quantize_env import QuantizeEnv
-from haq_lib.lib.env.linear_quantize_env import LinearQuantizeEnv
-from haq_lib.lib.rl.ddpg import DDPG
-from copy import deepcopy
+import math
+import logging
 import torch.backends.cudnn as cudnn
+from copy import deepcopy
+from haq_lib.lib.rl.ddpg import DDPG
+from haq_lib.lib.env.linear_quantize_env import LinearQuantizeEnv
+from haq_lib.lib.env.quantize_env import QuantizeEnv
+import hydra
+from utils.dataset import PartNormalDataset
+import numpy as np
+import shutil
+import importlib
+import torch
+import os
+import yaml
+import warnings
+
+warnings.filterwarnings('ignore')
+
+# training models
+# rl search
 
 
 def create_attr_dict(yaml_config):
@@ -56,7 +62,9 @@ def to_categorical(y, num_classes):
     return new_y
 
 
-def init_agent(model, pretrained, train_loader, val_loader, num_category, num_class, num_point):
+def init_agent(model, pretrained, train_loader,
+               val_loader, num_category,
+               num_class, num_point, logger):
     with open('config/agent.yaml', 'r') as f:
         args = AttrDict(yaml.safe_load(f.read()))
     create_attr_dict(args)
@@ -81,12 +89,14 @@ def init_agent(model, pretrained, train_loader, val_loader, num_category, num_cl
         env = LinearQuantizeEnv(model, pretrained,  train_loader, val_loader,
                                 compress_ratio=args.preserve_ratio, args=args,
                                 float_bit=args.float_bit, is_model_pruned=args.is_pruned,
-                                num_category=num_category, num_part=num_class, num_point=num_point)
+                                num_category=num_category, num_part=num_class,
+                                num_point=num_point, logger=logger)
     else:
         env = QuantizeEnv(model, pretrained,  train_loader, val_loader,
                           compress_ratio=args.preserve_ratio, args=args,
                           float_bit=args.float_bit, is_model_pruned=args.is_pruned,
-                          num_category=num_category, num_part=num_class, num_point=num_point)
+                          num_category=num_category, num_part=num_class,
+                          num_point=num_point, logger=logger)
 
     nb_states = env.layer_embedding.shape[1]
     nb_actions = 1  # actions for weight and activation quantization
@@ -103,6 +113,16 @@ def main():
     print(args.model)
     # HYPER PARAMETER
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
+    work_dir = args.work_dir
+    if not os.path.exists(work_dir):
+        os.mkdir(work_dir)
+
+    log_file = os.path.join(work_dir, 'search.log')
+    logger = logging.getLogger(__name__)
+    file_handler = logging.FileHandler(log_file, 'w')
+    file_handler.setFormatter(
+        logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.addHandler(file_handler)
 
     root = hydra.utils.to_absolute_path(
         'data/shapenetcore_partanno_segmentation_benchmark_v0_normal/')
@@ -131,12 +151,17 @@ def main():
 
     agent, env = init_agent(model, pretrained, train_loader,
                             val_loader, args.num_category,
-                            args.num_class, args.num_point)
+                            args.num_class, args.num_point, logger)
+
+    best_reward = -math.inf
+    best_policy = []
     agent.is_training = True
     step = episode = episode_steps = 0
     episode_reward = 0.
     observation = None
     T = []  # trajectory
+    if not os.path.exists(args.output):
+        os.mkdir(args.output)
     while episode < args.train_episode:  # counting based on episode
         # reset if it is the start of episode
         if observation is None:
@@ -168,9 +193,9 @@ def main():
 
         if done:  # end of episode
 
-            print('#{}: episode_reward:{:.4f} acc: {:.4f}, weight: {:.4f} MB'.format(episode, episode_reward,
-                                                                                     info['accuracy'],
-                                                                                     info['w_ratio'] * 1. / 8e6))
+            logger.info('#{}: episode_reward:{:.4f} acc: {:.4f}, weight: {:.4f} MB'.format(episode, episode_reward,
+                                                                                           info['accuracy'],
+                                                                                           info['w_ratio'] * 1. / 8e6))
 
             final_reward = T[-1][0]
             # agent observe and update policy
@@ -197,8 +222,8 @@ def main():
                 best_reward = final_reward
                 best_policy = env.strategy
 
-            print('best reward: {}\n'.format(best_reward))
-            print('best policy: {}\n'.format(best_policy))
+            logger.infoprint('best reward: {}\n'.format(best_reward))
+            logger.infoprint('best policy: {}\n'.format(best_policy))
 
     return best_policy, best_reward
 

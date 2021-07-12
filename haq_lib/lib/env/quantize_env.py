@@ -21,9 +21,12 @@ from utils.general import seg_classes, seg_label_to_cat
 class QuantizeEnv:
     def __init__(self, model, pretrained_model, train_loader, val_loader,
                  compress_ratio, args, float_bit=32, is_model_pruned=False,
-                 num_category=16, num_part=50, num_point=1024):
+                 num_category=16, num_part=50, num_point=1024, logger=None):
         # default setting
         self.quantizable_layer_types = [nn.Conv2d, nn.Linear]
+
+        # logger
+        self.logger = logger
 
         # save options
         self.model = model
@@ -74,9 +77,9 @@ class QuantizeEnv:
 
         # restore weight
         self.reset()
-        print('=> original miou: {:.3f}% on split dataset'.format(
+        self.logger.info('=> original miou: {:.3f}% on split dataset'.format(
             self.org_miou))
-        print('=> original #param: {:.4f}, model size: {:.4f} MB'.format(sum(self.wsize_list) * 1. / 1e6,
+        self.logger.info('=> original #param: {:.4f}, model size: {:.4f} MB'.format(sum(self.wsize_list) * 1. / 1e6,
                                                                          sum(self.wsize_list) * self.float_bit / 8e6))
 
     def adjust_learning_rate(self):
@@ -162,19 +165,28 @@ class QuantizeEnv:
                     self.strategy[-(i+1)] -= 1
                 if target >= self._cur_weight():
                     break
-        print('=> Final action list: {}'.format(self.strategy))
+        self.logger.info('=> Final action list: {}'.format(self.strategy))
+
+    # def _action_wall(self, action):
+    #     assert len(self.strategy) == self.cur_ind
+    #     # limit the action to certain range
+    #     action = float(action)
+    #     min_bit, max_bit = self.bound_list[self.cur_ind]
+    #     lbound, rbound = min_bit - 0.5, max_bit + \
+    #         0.5  # same stride length for each bit
+    #     action = (rbound - lbound) * action + lbound
+    #     action = int(np.round(action, 0))
+    #     self.last_action = action
+    #     return action  # not constrained here
 
     def _action_wall(self, action):
         assert len(self.strategy) == self.cur_ind
         # limit the action to certain range
         action = float(action)
         min_bit, max_bit = self.bound_list[self.cur_ind]
-        lbound, rbound = min_bit - 0.5, max_bit + \
-            0.5  # same stride length for each bit
-        action = (rbound - lbound) * action + lbound
-        action = int(np.round(action, 0))
-        self.last_action = action
-        return action  # not constrained here
+        out_action = max_bit if action > 0.5 else min_bit
+        self.last_action = out_action
+        return out_action  # not constrained here
 
     def _cur_weight(self):
         cur_weight = 0.
@@ -212,7 +224,7 @@ class QuantizeEnv:
                 self.quantizable_idx.append(i)
                 self.layer_type_list.append(type(m))
                 self.bound_list.append((self.min_bit, self.max_bit))
-        print('=> Final bound list: {}'.format(self.bound_list))
+        self.logger.info('=> Final bound list: {}'.format(self.bound_list))
 
     def _get_weight_size(self):
         # get the param size for each layers to prune, size expressed in number of params
@@ -267,7 +279,7 @@ class QuantizeEnv:
 
         # normalize the state
         layer_embedding = np.array(layer_embedding, 'float')
-        print('=> shape of embedding (n_layer * n_dim): {}'.format(layer_embedding.shape))
+        self.logger.info('=> shape of embedding (n_layer * n_dim): {}'.format(layer_embedding.shape))
         assert len(layer_embedding.shape) == 2, layer_embedding.shape
         for i in range(layer_embedding.shape[1]):
             fmin = min(layer_embedding[:, i])
@@ -284,7 +296,7 @@ class QuantizeEnv:
         model.train()
 
         end = time.time()
-        bar = Bar('valid:', max=len(train_loader))
+        bar = Bar('train:', max=len(train_loader))
         best_acc = 0.
         criterion = torch.nn.CrossEntropyLoss()
 
@@ -341,7 +353,7 @@ class QuantizeEnv:
                 best_acc = train_instance_acc
             self.adjust_learning_rate()
         
-        print('* Train class_avg_accuracy: %.3f' % best_acc)
+        self.logger.info('* Train class_avg_accuracy: %.3f' % best_acc)
 
         return best_acc
 
@@ -381,10 +393,10 @@ class QuantizeEnv:
                     (cur_batch_size, NUM_POINT)).astype(np.int32)
                 target = target.cpu().data.numpy()
 
-                for i in range(cur_batch_size):
-                    cat = seg_label_to_cat[target[i, 0]]
-                    logits = cur_pred_val_logits[i, :, :]
-                    cur_pred_val[i, :] = np.argmax(
+                for j in range(cur_batch_size):
+                    cat = seg_label_to_cat[target[j, 0]]
+                    logits = cur_pred_val_logits[j, :, :]
+                    cur_pred_val[j, :] = np.argmax(
                         logits[:, seg_classes[cat]], 1) + seg_classes[cat][0]
 
                 correct = np.sum(cur_pred_val == target)
@@ -436,13 +448,13 @@ class QuantizeEnv:
             test_metrics['class_avg_accuracy'] = np.mean(
                 np.array(total_correct_class) / np.array(total_seen_class, dtype=np.float))
             for cat in sorted(shape_ious.keys()):
-                print('* Eval mIoU of {} {}'.format(
+                self.logger.info('* Eval mIoU of {} {}'.format(
                     cat + ' ' * (14 - len(cat)), shape_ious[cat]))
             test_metrics['class_avg_iou'] = mean_shape_ious
             test_metrics['inctance_avg_iou'] = np.mean(all_shape_ious)
             bar.finish()
 
-        print('* Test accuracy: %.3f  class_avg_accuracy: %.3f  '
+        self.logger.info('* Test accuracy: %.3f  class_avg_accuracy: %.3f  '
               'class_avg_iou: %.3f  inctance_avg_iou: %.3f' %
               (test_metrics['accuracy'], test_metrics['class_avg_accuracy'],
                test_metrics['class_avg_iou'], test_metrics['inctance_avg_iou']))
