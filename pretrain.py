@@ -31,14 +31,18 @@ def main():
 
     work_dir = args.work_dir
     if not os.path.exists(work_dir):
-        os.mkdir(work_dir)
+        os.makedirs(work_dir)
 
-    log_file = os.path.join(work_dir, 'log.log')
-    logger = logging.getLogger(__name__)
+    log_file =  os.path.join(work_dir, 'pretrain.log')
+    logger = logging.getLogger('search')
+    logger.setLevel(logging.INFO)
     file_handler = logging.FileHandler(log_file, 'w')
     file_handler.setFormatter(
-            logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    file_handler.setLevel(logging.INFO)
     logger.addHandler(file_handler)
+    console = logging.StreamHandler()
+    logger.addHandler(console)
 
     root = hydra.utils.to_absolute_path(
         'data/shapenetcore_partanno_segmentation_benchmark_v0_normal/')
@@ -97,6 +101,9 @@ def main():
     global_epoch = 0
     best_class_avg_iou = 0
     best_inctance_avg_iou = 0
+    fp16 = args['fp16']
+    if fp16:
+        scaler = torch.cuda.amp.GradScaler()
 
     for epoch in range(start_epoch, args.epoch):
         mean_correct = []
@@ -124,23 +131,34 @@ def main():
                 points[:, :, 0:3])
             points[:, :, 0:3] = provider.shift_point_cloud(points[:, :, 0:3])
             points = torch.Tensor(points)
+            target = target.view(-1, 1)[:, 0]
 
             points, label, target = points.float().cuda(
             ), label.long().cuda(), target.long().cuda()
             optimizer.zero_grad()
 
-            seg_pred = model(torch.cat([points, to_categorical(
-                label, num_category).repeat(1, points.shape[1], 1)], -1))
-            seg_pred = seg_pred.contiguous().view(-1, num_part)
-            target = target.view(-1, 1)[:, 0]
+            if fp16:
+                with torch.cuda.amp.autocast():
+                    seg_pred = model(torch.cat([points, to_categorical(
+                        label, num_category).repeat(1, points.shape[1], 1)], -1))
+                    seg_pred = seg_pred.contiguous().view(-1, num_part)
+                    loss = criterion(seg_pred, target)
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+            else:
+                seg_pred = model(torch.cat([points, to_categorical(
+                    label, num_category).repeat(1, points.shape[1], 1)], -1))
+                seg_pred = seg_pred.contiguous().view(-1, num_part)
+                loss = criterion(seg_pred, target)
+                loss.backward()
+                optimizer.step()
+
             pred_choice = seg_pred.data.max(1)[1]
 
             correct = pred_choice.eq(target.data).cpu().sum()
             mean_correct.append(
                 correct.item() / (args.batch_size * args.num_point))
-            loss = criterion(seg_pred, target)
-            loss.backward()
-            optimizer.step()
 
         train_instance_acc = np.mean(mean_correct)
         logger.info('Train accuracy is: %.5f' % train_instance_acc)
@@ -246,6 +264,7 @@ def main():
         global_epoch += 1
 
     shutil.copy(savepath, './best_model.pth')
+
 
 if __name__ == '__main__':
     main()

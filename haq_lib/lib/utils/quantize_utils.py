@@ -21,7 +21,8 @@ def k_means_cpu(weight, n_clusters, init='k-means++', max_iter=50):
     if n_clusters > weight.size:
         n_clusters = weight.size
 
-    k_means = KMeans(n_clusters=n_clusters, init=init, n_init=1, max_iter=max_iter)
+    k_means = KMeans(n_clusters=n_clusters, init=init,
+                     n_init=1, max_iter=max_iter)
     k_means.fit(weight)
 
     centroids = k_means.cluster_centers_
@@ -44,7 +45,8 @@ def quantize_model(model, quantize_index, quantize_bits, max_iter=50, mode='cpu'
     if free_high_bit:
         # quantize weight with high bit will not lead accuracy loss, so we can omit them to save time
         quantize_bits = [-1 if i > 6 else i for i in quantize_bits]
-    quantize_layer_bit_dict = {n: b for n, b in zip(quantize_index, quantize_bits)}
+    quantize_layer_bit_dict = {n: b for n,
+                               b in zip(quantize_index, quantize_bits)}
     centroid_label_dict = {}
 
     bar = Bar('KMeans:', max=len(quantize_index))
@@ -66,15 +68,18 @@ def quantize_model(model, quantize_index, quantize_bits, max_iter=50, mode='cpu'
             w = layer.weight.data
             if is_pruned:
                 nz_mask = w.ne(0)
-                print('*** pruned density: {:.4f}'.format(torch.sum(nz_mask) / w.numel()))
+                print(
+                    '*** pruned density: {:.4f}'.format(torch.sum(nz_mask) / w.numel()))
                 ori_shape = w.size()
                 w = w[nz_mask]
             if mode == 'cpu':
-                centroids, labels = k_means_cpu(w.cpu().numpy(), 2 ** n_bit[0], init=centroids_init, max_iter=max_iter)
+                centroids, labels = k_means_cpu(
+                    w.cpu().numpy(), 2 ** n_bit[0], init=centroids_init, max_iter=max_iter)
             else:
                 raise NotImplementedError
             if is_pruned:
-                full_labels = labels.new(ori_shape).zero_() - 1  # use -1 for pruned elements
+                # use -1 for pruned elements
+                full_labels = labels.new(ori_shape).zero_() - 1
                 full_labels[nz_mask] = labels
                 labels = full_labels
             this_cl_list.append([centroids, labels])
@@ -84,7 +89,8 @@ def quantize_model(model, quantize_index, quantize_bits, max_iter=50, mode='cpu'
         if hasattr(layer, 'bias') and quantize_bias:
             w = layer.bias.data
             if mode == 'cpu':
-                centroids, labels = k_means_cpu(w.cpu().numpy(), 2 ** n_bit[1], init=centroids_init, max_iter=max_iter)
+                centroids, labels = k_means_cpu(
+                    w.cpu().numpy(), 2 ** n_bit[1], init=centroids_init, max_iter=max_iter)
             else:
                 raise NotImplementedError
             this_cl_list.append([centroids, labels])
@@ -97,6 +103,11 @@ def quantize_model(model, quantize_index, quantize_bits, max_iter=50, mode='cpu'
         bar.next()
     bar.finish()
     return centroid_label_dict
+
+
+def replace_nan(a):
+    a = torch.where(torch.isnan(a), torch.full_like(a, 0), a)
+    return a
 
 
 def kmeans_update_model(model, quantizable_idx, centroid_label_dict, free_high_bit=False):
@@ -112,8 +123,13 @@ def kmeans_update_model(model, quantizable_idx, centroid_label_dict, free_high_b
             continue
         for j in range(num_centroids):
             mask_cl = (this_cl_list[0][1] == j).float()
-            new_weight_data += (layer.weight.data * mask_cl).sum() / mask_cl.sum() * mask_cl
+            temp = (layer.weight.data *
+                                mask_cl).sum() / mask_cl.sum() * mask_cl
+            new_weight_data += replace_nan(temp)
         layer.weight.data = new_weight_data
+        # print('-[INFO] layer id:{} mask sum:{} max:{} min:{}'.format(
+        #     i, mask_cl.sum(), new_weight_data.max(), new_weight_data.min()
+        # ))
 
 
 class QModule(nn.Module):
@@ -130,7 +146,8 @@ class QModule(nn.Module):
 
         self.init_range = 6.
         self.activation_range = nn.Parameter(torch.Tensor([self.init_range]))
-        self.weight_range = nn.Parameter(torch.Tensor([-1.0]), requires_grad=False)
+        self.weight_range = nn.Parameter(
+            torch.Tensor([-1.0]), requires_grad=False)
 
         self._quantized = True
         self._tanh_weight = False
@@ -208,7 +225,8 @@ class QModule(nn.Module):
         mx = np.abs(data).max()
         if np.isclose(mx, 0.0):
             return 0.0
-        hist, bin_edges = np.histogram(np.abs(data), bins='sqrt', range=(mn, mx), density=True)
+        hist, bin_edges = np.histogram(
+            np.abs(data), bins='sqrt', range=(mn, mx), density=True)
         hist = hist / np.sum(hist)
         cumsum = np.cumsum(hist)
         n = pow(2, int(bitwidth) - 1)
@@ -223,7 +241,8 @@ class QModule(nn.Module):
             threshold_tmp = (i + 0.5) * (bin_edges[1] - bin_edges[0])
             threshold = np.concatenate((threshold, [threshold_tmp]))
             scaling_factor_tmp = threshold_tmp / (pow(2, bitwidth - 1) - 1)
-            scaling_factor = np.concatenate((scaling_factor, [scaling_factor_tmp]))
+            scaling_factor = np.concatenate(
+                (scaling_factor, [scaling_factor_tmp]))
             p = np.copy(cumsum)
             p[(i - 1):] = 1
             x = np.linspace(0.0, 1.0, n)
@@ -236,7 +255,8 @@ class QModule(nn.Module):
             q_interp = np.interp(x, xp, fp)
             q = np.copy(p)
             q[:i] = q_interp
-            d_tmp = np.sum((cumsum - q) * np.log2(cumsum / q))  # Kullback-Leibler-J
+            # Kullback-Leibler-J
+            d_tmp = np.sum((cumsum - q) * np.log2(cumsum / q))
             d = np.concatenate((d, [d_tmp]))
 
         th_layer_out = threshold[np.argmin(d)]
@@ -248,24 +268,32 @@ class QModule(nn.Module):
         if self._quantized and self._a_bit > 0:
             if self._calibrate:
                 if self._a_bit < 5:
-                    threshold = self._compute_threshold(inputs.data.cpu().numpy(), self._a_bit)
-                    estimate_activation_range = min(min(self.init_range, inputs.abs().max().item()), threshold)
+                    threshold = self._compute_threshold(
+                        inputs.data.cpu().numpy(), self._a_bit)
+                    estimate_activation_range = min(
+                        min(self.init_range, inputs.abs().max().item()), threshold)
                 else:
-                    estimate_activation_range = min(self.init_range, inputs.abs().max().item())
+                    estimate_activation_range = min(
+                        self.init_range, inputs.abs().max().item())
                 # print('range:', estimate_activation_range, '  shape:', inputs.shape, '  inp_abs_max:', inputs.abs().max())
-                self.activation_range.data = torch.tensor([estimate_activation_range], device=inputs.device)
+                self.activation_range.data = torch.tensor(
+                    [estimate_activation_range], device=inputs.device)
                 return inputs
 
             if self._trainable_activation_range:
                 if self._half_wave:
-                    ori_x = 0.5 * (inputs.abs() - (inputs - self.activation_range).abs() + self.activation_range)
+                    ori_x = 0.5 * \
+                        (inputs.abs() - (inputs -
+                         self.activation_range).abs() + self.activation_range)
                 else:
-                    ori_x = 0.5 * ((-inputs - self.activation_range).abs() - (inputs - self.activation_range).abs())
+                    ori_x = 0.5 * ((-inputs - self.activation_range).abs() -
+                                   (inputs - self.activation_range).abs())
             else:
                 if self._half_wave:
                     ori_x = inputs.clamp(0.0, self.activation_range.item())
                 else:
-                    ori_x = inputs.clamp(-self.activation_range.item(), self.activation_range.item())
+                    ori_x = inputs.clamp(-self.activation_range.item(),
+                                         self.activation_range.item())
 
             scaling_factor = self.activation_range.item() / (2. ** self._a_bit - 1.)
             x = ori_x.detach().clone()
@@ -290,7 +318,8 @@ class QModule(nn.Module):
 
             if self._calibrate:
                 if self._w_bit < 5:
-                    threshold = self._compute_threshold(weight.data.cpu().numpy(), self._w_bit)
+                    threshold = self._compute_threshold(
+                        weight.data.cpu().numpy(), self._w_bit)
                 else:
                     threshold = weight.abs().max().item()
                 self.weight_range.data[0] = threshold
@@ -362,7 +391,8 @@ class QConv2d(QModule):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1,
                  padding=0, dilation=1, groups=1, bias=False,
                  w_bit=-1, a_bit=-1, half_wave=True):
-        super(QConv2d, self).__init__(w_bit=w_bit, a_bit=a_bit, half_wave=half_wave)
+        super(QConv2d, self).__init__(
+            w_bit=w_bit, a_bit=a_bit, half_wave=half_wave)
         if in_channels % groups != 0:
             raise ValueError('in_channels must be divisible by groups')
         if out_channels % groups != 0:
@@ -375,7 +405,8 @@ class QConv2d(QModule):
         self.dilation = _pair(dilation)
         self.groups = groups
 
-        self.weight = nn.Parameter(torch.zeros(out_channels, in_channels // groups, *self.kernel_size))
+        self.weight = nn.Parameter(torch.zeros(
+            out_channels, in_channels // groups, *self.kernel_size))
         if bias:
             self.bias = nn.Parameter(torch.zeros(out_channels))
         else:
@@ -390,7 +421,8 @@ class QConv2d(QModule):
             nn.init.uniform_(self.bias, -bound, bound)
 
     def forward(self, inputs):
-        inputs, weight, bias = self._quantize(inputs=inputs, weight=self.weight, bias=self.bias)
+        inputs, weight, bias = self._quantize(
+            inputs=inputs, weight=self.weight, bias=self.bias)
         return F.conv2d(inputs, weight, bias, self.stride, self.padding, self.dilation, self.groups)
 
     def extra_repr(self):
@@ -412,7 +444,8 @@ class QConv2d(QModule):
 
 class QLinear(QModule):
     def __init__(self, in_features, out_features, bias=True, w_bit=-1, a_bit=-1, half_wave=True):
-        super(QLinear, self).__init__(w_bit=w_bit, a_bit=a_bit, half_wave=half_wave)
+        super(QLinear, self).__init__(
+            w_bit=w_bit, a_bit=a_bit, half_wave=half_wave)
         self.in_features = in_features
         self.out_features = out_features
         self.weight = nn.Parameter(torch.zeros(out_features, in_features))
@@ -423,7 +456,8 @@ class QLinear(QModule):
         self.reset_parameters()
 
     def forward(self, inputs):
-        inputs, weight, bias = self._quantize(inputs=inputs, weight=self.weight, bias=self.bias)
+        inputs, weight, bias = self._quantize(
+            inputs=inputs, weight=self.weight, bias=self.bias)
         return F.linear(inputs, weight=weight, bias=bias)
 
     def reset_parameters(self):
@@ -437,7 +471,8 @@ class QLinear(QModule):
         s = 'in_features={}, out_features={}, bias={}'.format(
             self.in_features, self.out_features, self.bias is not None)
         if self.w_bit > 0 or self.a_bit > 0:
-            s += ', w_bit={w_bit}, a_bit={a_bit}'.format(w_bit=self.w_bit, a_bit=self.a_bit)
+            s += ', w_bit={w_bit}, a_bit={a_bit}'.format(
+                w_bit=self.w_bit, a_bit=self.a_bit)
             s += ', half wave' if self.half_wave else ', full wave'
         return s
 
@@ -478,5 +513,3 @@ def set_fix_weight(model, fix_weight=True):
     for name, module in model.named_modules():
         if isinstance(module, QModule):
             module.set_fix_weight(fix_weight=fix_weight)
-
-

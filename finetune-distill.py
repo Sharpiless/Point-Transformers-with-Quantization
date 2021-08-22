@@ -1,3 +1,4 @@
+from haq_lib.lib.utils.utils import AverageMeter
 from search import AttrDict, create_attr_dict
 import yaml
 import os
@@ -11,7 +12,7 @@ import torch.nn as nn
 from tqdm import tqdm
 from utils.dataset import PartNormalDataset
 import hydra
-
+from progress.bar import Bar
 from utils.general import to_categorical
 from utils.general import seg_classes, seg_label_to_cat
 from haq_lib.lib.utils.quantize_utils import quantize_model, kmeans_update_model
@@ -26,7 +27,7 @@ def inplace_relu(m):
 
 def main():
 
-    with open('config/finetune.yaml', 'r') as f:
+    with open('config/finetune-dist.yaml', 'r') as f:
         args = AttrDict(yaml.safe_load(f.read()))
     create_attr_dict(args)
 
@@ -36,7 +37,7 @@ def main():
     if not os.path.exists(work_dir):
         os.makedirs(work_dir)
 
-    log_file =  os.path.join(work_dir, 'finetune.log')
+    log_file =  os.path.join(work_dir, 'finetune-dist.log')
     logger = logging.getLogger('finetune')
     logger.setLevel(logging.INFO)
     file_handler = logging.FileHandler(log_file, 'w')
@@ -68,12 +69,17 @@ def main():
 
     model = getattr(importlib.import_module('models.model'),
                     'PointTransformerSeg')(args).cuda()
+
+    teacher_model = getattr(importlib.import_module('models.model'),
+                    'PointTransformerSeg')(args).cuda()
+
     criterion = torch.nn.CrossEntropyLoss()
 
     assert os.path.exists('best_model.pth'), 'best_model.pth must be provided.'
     checkpoint = torch.load('best_model.pth')
     start_epoch = checkpoint['epoch']
     model.load_state_dict(checkpoint['model_state_dict'])
+    teacher_model.load_state_dict(checkpoint['model_state_dict'])
     logger.info('Use pretrain model')
 
     if args.optimizer == 'Adam':
@@ -146,9 +152,13 @@ def main():
         print('BN momentum updated to: %f' % momentum)
         model = model.apply(lambda x: bn_momentum_adjust(x, momentum))
         model = model.train()
+        teacher_model.eval()
 
         '''learning one epoch'''
-        for i, (points, label, target) in tqdm(enumerate(trainDataLoader), total=len(trainDataLoader), smoothing=0.9):
+        total_loss = AverageMeter()
+        distill_loss = AverageMeter()
+        bar = Bar('distill-finetune:', max=len(trainDataLoader))
+        for i, (points, label, target) in enumerate(trainDataLoader):
             points = points.data.numpy()
             points[:, :, 0:3] = provider.random_scale_point_cloud(
                 points[:, :, 0:3])
@@ -158,9 +168,13 @@ def main():
             points, label, target = points.float().cuda(
             ), label.long().cuda(), target.long().cuda()
             optimizer.zero_grad()
+            inputs = torch.cat([points, to_categorical(
+                label, num_category).repeat(1, points.shape[1], 1)], -1)
 
-            seg_pred = model(torch.cat([points, to_categorical(
-                label, num_category).repeat(1, points.shape[1], 1)], -1))
+            seg_pred = model(inputs)
+            teacher_seg_pred = teacher_model(inputs)
+            dloss = nn.functional.mse_loss(seg_pred, teacher_seg_pred)
+
             seg_pred = seg_pred.contiguous().view(-1, num_part)
             target = target.view(-1, 1)[:, 0]
             pred_choice = seg_pred.data.max(1)[1]
@@ -168,14 +182,27 @@ def main():
             correct = pred_choice.eq(target.data).cpu().sum()
             mean_correct.append(
                 correct.item() / (args.batch_size * args.num_point))
-            loss = criterion(seg_pred, target)
+            tloss = criterion(seg_pred, target)
+            loss = tloss + dloss * args['dist_loss_weight']
             loss.backward()
             optimizer.step()
             kmeans_update_model(
                 model, quantizable_idx, centroid_label_dict, free_high_bit=args.free_high_bit)
+            total_loss.update(tloss.detach().cpu().numpy())
+            distill_loss.update(dloss.detach().cpu().numpy())
+            bar.suffix = \
+                        '({batch}/{size}) TLoss: {total_loss:.3f} | DLoss: {distill_loss:.3f} | ETA: {eta:} | ' \
+                        .format(
+                            batch=i + 1,
+                            size=len(trainDataLoader),
+                            total_loss=total_loss.avg,
+                            distill_loss=distill_loss.avg,
+                            eta=bar.eta_td
+                        )
+            bar.next()
 
         train_instance_acc = np.mean(mean_correct)
-        logger.info('Train accuracy is: %.5f' % train_instance_acc)
+        logger.info('Train accuracy is: %.5f TLoss: %.5f DLoss: %.5f' % (train_instance_acc, total_loss.avg, distill_loss.avg))
 
         with torch.no_grad():
             test_metrics = {}

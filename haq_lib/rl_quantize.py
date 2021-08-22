@@ -85,13 +85,13 @@ def train(num_episode, agent, env, output, linear_quantization=False, debug=Fals
                                                                                          info['cost'] * 1. / 8e6))
             else:
                 if debug:
-                    print('#{}: episode_reward:{:.4f} acc: {:.4f}, weight: {:.4f} MB'.format(episode, episode_reward,
+                    print('#{}: episode_reward:{:.4f} acc: {:.4f}, weight: {:.4f} %'.format(episode, episode_reward,
                                                                                              info['accuracy'],
-                                                                                             info['w_ratio'] * 1. / 8e6))
+                                                                                             info['w_ratio'] * 100))
                 text_writer.write(
-                    '#{}: episode_reward:{:.4f} acc: {:.4f}, weight: {:.4f} MB\n'.format(episode, episode_reward,
+                    '#{}: episode_reward:{:.4f} acc: {:.4f}, weight: {:.4f} %\n'.format(episode, episode_reward,
                                                                                          info['accuracy'],
-                                                                                         info['w_ratio'] * 1. / 8e6))
+                                                                                         info['w_ratio'] * 100))
 
             final_reward = T[-1][0]
             # agent observe and update policy

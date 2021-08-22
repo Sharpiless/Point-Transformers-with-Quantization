@@ -2,7 +2,7 @@ suffix: indoor3d
 output: ./save
 seed: 10
 linear_quantization: False
-preserve_ratio: 0.5
+preserve_ratio: 0.1
 float_bit: 32
 is_pruned: False
 rmsize: 128
@@ -18,8 +18,8 @@ hidden1: 300
 hidden2: 300
 lr_c: 1e-3
 lr_a: 1e-4
-warmup: 20
-discount: 1.0
+warmup: 5
+discount: 0.9
 bsize: 64
 rmsize: 128
 window_length: 1
@@ -29,4 +29,3 @@ delta_decay: 0.99
 n_update: 1
 init_w: 0.0003
 epsilon: 50000
-init_delta: 0.5

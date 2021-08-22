@@ -115,14 +115,18 @@ def main():
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
     work_dir = args.work_dir
     if not os.path.exists(work_dir):
-        os.mkdir(work_dir)
+        os.makedirs(work_dir)
 
-    log_file = os.path.join(work_dir, 'search.log')
-    logger = logging.getLogger(__name__)
+    log_file =  os.path.join(work_dir, 'search.log')
+    logger = logging.getLogger('search')
+    logger.setLevel(logging.INFO)
     file_handler = logging.FileHandler(log_file, 'w')
     file_handler.setFormatter(
         logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    file_handler.setLevel(logging.INFO)
     logger.addHandler(file_handler)
+    console = logging.StreamHandler()
+    logger.addHandler(console)
 
     root = hydra.utils.to_absolute_path(
         'data/shapenetcore_partanno_segmentation_benchmark_v0_normal/')
@@ -148,7 +152,9 @@ def main():
     if 'model_state_dict' in pretrained:
         pretrained = pretrained['model_state_dict']
     # pretrained = model.state_dict()
-
+    # for m in model.modules():
+    #     print(type(m))
+    #     pass
     agent, env = init_agent(model, pretrained, train_loader,
                             val_loader, args.num_category,
                             args.num_class, args.num_point, logger)
@@ -193,9 +199,9 @@ def main():
 
         if done:  # end of episode
 
-            logger.info('#{}: episode_reward:{:.4f} acc: {:.4f}, weight: {:.4f} MB'.format(episode, episode_reward,
+            logger.info('#{}: episode_reward:{:.4f} acc: {:.4f}, weight: {:.4f} %'.format(episode, episode_reward,
                                                                                            info['accuracy'],
-                                                                                           info['w_ratio'] * 1. / 8e6))
+                                                                                           info['w_ratio'] * 100))
 
             final_reward = T[-1][0]
             # agent observe and update policy

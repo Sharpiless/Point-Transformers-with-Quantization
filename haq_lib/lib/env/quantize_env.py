@@ -59,8 +59,10 @@ class QuantizeEnv:
         self.last_action = self.max_bit
 
         # sanity check
-        assert self.compress_ratio > self.min_bit * 1. / self.float_bit, \
-            'Error! You can make achieve compress_ratio smaller than min_bit!'
+        assert self.compress_ratio >= self.min_bit * 1. / self.float_bit, \
+            'Error! You can make achieve compress_ratio {} smaller than min_bit {}!'.format(
+                self.compress_ratio, self.min_bit * 1. / self.float_bit
+            )
 
         # init reward
         self.best_reward = -math.inf
@@ -80,7 +82,7 @@ class QuantizeEnv:
         self.logger.info('=> original miou: {:.3f}% on split dataset'.format(
             self.org_miou))
         self.logger.info('=> original #param: {:.4f}, model size: {:.4f} MB'.format(sum(self.wsize_list) * 1. / 1e6,
-                                                                         sum(self.wsize_list) * self.float_bit / 8e6))
+                                                                                    sum(self.wsize_list) * self.float_bit / 8e6))
 
     def adjust_learning_rate(self):
         for param_group in self.optimizer.param_groups:
@@ -98,7 +100,6 @@ class QuantizeEnv:
             assert len(self.strategy) == len(self.quantizable_idx)
             w_size = self._cur_weight()
             w_size_ratio = self._cur_weight() / self._org_weight()
-
             centroid_label_dict = quantize_model(self.model, self.quantizable_idx, self.strategy,
                                                  mode='cpu', quantize_bias=False, centroids_init='k-means++',
                                                  is_pruned=self.is_model_pruned, max_iter=3)
@@ -149,6 +150,7 @@ class QuantizeEnv:
         self.cur_ind = 0
         self.strategy = []  # quantization strategy
         obs = self.layer_embedding[0].copy()
+        self.logger.info('=> Param reset.')
         return obs
 
     def _is_final_layer(self):
@@ -162,22 +164,10 @@ class QuantizeEnv:
         while min_weight < self._cur_weight() and target < self._cur_weight():
             for i, n_bit in enumerate(reversed(self.strategy)):
                 if n_bit > self.min_bit:
-                    self.strategy[-(i+1)] -= 1
+                    self.strategy[-(i+1)] = min(self.strategy)
                 if target >= self._cur_weight():
                     break
         self.logger.info('=> Final action list: {}'.format(self.strategy))
-
-    # def _action_wall(self, action):
-    #     assert len(self.strategy) == self.cur_ind
-    #     # limit the action to certain range
-    #     action = float(action)
-    #     min_bit, max_bit = self.bound_list[self.cur_ind]
-    #     lbound, rbound = min_bit - 0.5, max_bit + \
-    #         0.5  # same stride length for each bit
-    #     action = (rbound - lbound) * action + lbound
-    #     action = int(np.round(action, 0))
-    #     self.last_action = action
-    #     return action  # not constrained here
 
     def _action_wall(self, action):
         assert len(self.strategy) == self.cur_ind
@@ -209,21 +199,16 @@ class QuantizeEnv:
         self.quantizable_idx = []
         self.layer_type_list = []
         self.bound_list = []
-        # for i, layers in enumerate(self.model.modules()):
-        #     if hasattr(self.model, 'modules'):
-        #         layers = layers.modules()
-        #     else:
-        #         layers = [layers]
-        #     for m in layers:
-        #         if type(m) in self.quantizable_layer_types:
-        #             self.quantizable_idx.append(i)
-        #             self.layer_type_list.append(type(m))
-        #             self.bound_list.append((self.min_bit, self.max_bit))
+
         for i, m in enumerate(self.model.modules()):
-            if type(m) in self.quantizable_layer_types:
-                self.quantizable_idx.append(i)
-                self.layer_type_list.append(type(m))
-                self.bound_list.append((self.min_bit, self.max_bit))
+            flag = type(m) in self.quantizable_layer_types
+            if flag:
+                if i < 6 or i > 238:
+                    continue
+                else:
+                    self.quantizable_idx.append(i)
+                    self.layer_type_list.append(type(m))
+                    self.bound_list.append((self.min_bit, self.max_bit))
         self.logger.info('=> Final bound list: {}'.format(self.bound_list))
 
     def _get_weight_size(self):
@@ -279,7 +264,8 @@ class QuantizeEnv:
 
         # normalize the state
         layer_embedding = np.array(layer_embedding, 'float')
-        self.logger.info('=> shape of embedding (n_layer * n_dim): {}'.format(layer_embedding.shape))
+        self.logger.info(
+            '=> shape of embedding (n_layer * n_dim): {}'.format(layer_embedding.shape))
         assert len(layer_embedding.shape) == 2, layer_embedding.shape
         for i in range(layer_embedding.shape[1]):
             fmin = min(layer_embedding[:, i])
@@ -302,57 +288,82 @@ class QuantizeEnv:
 
         for _ in range(epochs):
             seg_label_to_cat = {}  # {0:Airplane, 1:Airplane, ...49:Table}
-            mean_correct = []
 
             for cat in seg_classes.keys():
                 for label in seg_classes[cat]:
                     seg_label_to_cat[label] = cat
 
-            for i, (points, label, target) in enumerate(train_loader):
+            total_correct = 0
+            total_seen = 0
+            total_seen_class = [0 for _ in range(self.num_part)]
+            total_correct_class = [0 for _ in range(self.num_part)]
+
+            for b, (points, label, target) in enumerate(train_loader):
                 cur_batch_size, NUM_POINT, _ = points.size()
                 points, label, target = points.float().cuda(
                 ), label.long().cuda(), target.long().cuda()
                 seg_pred = model(torch.cat([points, to_categorical(
                     label, self.num_category).repeat(1, points.shape[1], 1)], -1))
-                seg_pred = seg_pred.contiguous().view(-1, self.num_part)
-                target = target.view(-1, 1)[:, 0]
-                pred_choice = seg_pred.data.max(1)[1]
 
-                correct = pred_choice.eq(target.data).cpu().sum()
-                mean_correct.append(
-                    correct.item() / (train_loader.batch_size * self.num_point))
-                loss = criterion(seg_pred, target)
+                target_ = target.view(-1, 1)[:, 0]
+
+                cur_pred_val = seg_pred.cpu().data.numpy()
+                seg_pred = seg_pred.contiguous().view(-1, self.num_part)
+
+                cur_pred_val_logits = cur_pred_val
+                cur_pred_val = np.zeros(
+                    (cur_batch_size, NUM_POINT)).astype(np.int32)
+                target = target.cpu().data.numpy()
+
+                for j in range(cur_batch_size):
+                    cat = seg_label_to_cat[target[j, 0]]
+                    logits = cur_pred_val_logits[j, :, :]
+                    cur_pred_val[j, :] = np.argmax(
+                        logits[:, seg_classes[cat]], 1) + seg_classes[cat][0]
+
+                correct = np.sum(cur_pred_val == target)
+                total_correct += correct
+                total_seen += (cur_batch_size * NUM_POINT)
+
+                for l in range(self.num_part):
+                    total_seen_class[l] += np.sum(target == l)
+                    total_correct_class[l] += (
+                        np.sum((cur_pred_val == l) & (target == l)))
+
+                loss = criterion(seg_pred, target_)
+                self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
-
+                # measure elapsed time
                 kmeans_update_model(model, self.quantizable_idx,
                                     centroid_label_dict, free_high_bit=True)
-
-                # measure elapsed time
                 batch_time.update(time.time() - end)
                 end = time.time()
 
                 # plot progress
-                if i % 1 == 0:
+                if b % 1 == 0:
                     bar.suffix = \
-                        '({batch}/{size}) Data: {data:.3f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | ' \
+                        '({batch}/{size}) Data: {data:.3f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | MAX/MIN: {max_:}/{min_:}' \
                         .format(
-                            batch=i + 1,
+                            batch=b + 1,
                             size=len(train_loader),
                             data=data_time.avg,
                             bt=batch_time.avg,
                             total=bar.elapsed_td,
-                            eta=bar.eta_td
+                            eta=bar.eta_td,
+                            max_=cur_pred_val.max(),
+                            min_=cur_pred_val.min()
                         )
                     bar.next()
 
+            train_instance_acc = np.mean(
+                np.array(total_correct_class) / np.array(total_seen_class, dtype=np.float))
             bar.finish()
-            train_instance_acc = np.mean(mean_correct)
 
             if train_instance_acc > best_acc:
                 best_acc = train_instance_acc
             self.adjust_learning_rate()
-        
+
         self.logger.info('* Train class_avg_accuracy: %.3f' % best_acc)
 
         return best_acc
@@ -380,7 +391,7 @@ class QuantizeEnv:
                 for label in seg_classes[cat]:
                     seg_label_to_cat[label] = cat
 
-            for i, (points, label, target) in enumerate(val_loader):
+            for b, (points, label, target) in enumerate(val_loader):
                 cur_batch_size, NUM_POINT, _ = points.size()
                 points, label, target = points.float().cuda(
                 ), label.long().cuda(), target.long().cuda()
@@ -429,7 +440,7 @@ class QuantizeEnv:
                     bar.suffix = \
                         '({batch}/{size}) Data: {data:.3f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | ' \
                         .format(
-                            batch=i + 1,
+                            batch=b + 1,
                             size=len(val_loader),
                             data=data_time.avg,
                             bt=batch_time.avg,
@@ -455,8 +466,8 @@ class QuantizeEnv:
             bar.finish()
 
         self.logger.info('* Test accuracy: %.3f  class_avg_accuracy: %.3f  '
-              'class_avg_iou: %.3f  inctance_avg_iou: %.3f' %
-              (test_metrics['accuracy'], test_metrics['class_avg_accuracy'],
-               test_metrics['class_avg_iou'], test_metrics['inctance_avg_iou']))
+                         'class_avg_iou: %.3f  inctance_avg_iou: %.3f' %
+                         (test_metrics['accuracy'], test_metrics['class_avg_accuracy'],
+                          test_metrics['class_avg_iou'], test_metrics['inctance_avg_iou']))
 
         return test_metrics['accuracy']
