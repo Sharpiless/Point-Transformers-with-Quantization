@@ -222,8 +222,8 @@ def main():
                 best_reward = final_reward
                 best_policy = env.strategy
 
-            logger.infoprint('best reward: {}\n'.format(best_reward))
-            logger.infoprint('best policy: {}\n'.format(best_policy))
+            logger.info('best reward: {}\n'.format(best_reward))
+            logger.info('best policy: {}\n'.format(best_policy))
 
     return best_policy, best_reward
 

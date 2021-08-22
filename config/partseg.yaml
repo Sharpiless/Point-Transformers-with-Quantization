@@ -21,4 +21,7 @@ model:
   transformer_dim: 512
   name: PointTransformer
 
-work_dir: log/partseg/${model.name}
+work_dir: log/partseg/PointTransformer
+init_delta: 0.5
+delta_decay: 0.99
+n_update: 1
