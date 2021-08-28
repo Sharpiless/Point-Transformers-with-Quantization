@@ -92,7 +92,6 @@ trained only for 4 epoches due to hardware limitation.
 | Point Transformer (our-0.1×preserve, mix)  |      0.9341     |     0.7894    |    0.8337     |
 | Point Transformer (our-0.1×preserve, mix, finetune)  |      0.936523     |     0.796603    |    0.837771     |
 | Point Transformer (our-0.1×preserve, mix, finetune, distill)  |      0.940213     |     0.799304    |    0.839487     |
-注：量化压缩模型大小为0.1的限制下进行，且所有量化结果均已对模型第一层和最后层使用8位量化，以提高量化后魔性的准确率。其中mix指使用混合精度训练，distill指使用知识蒸馏的方法。理论上讲，这两种方法能带来更高的准确率提升，但是后期使用开放服务器colab训练，有时长限制，在准确率得到提升后就停止了，可能未完全达到饱和。
 
 # 2.2 Pytorch Implementation of Point Transformers
 
