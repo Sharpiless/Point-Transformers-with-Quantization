@@ -1,5 +1,4 @@
-# 2. 任务完成情况
-# 2.1 Pytorch Implementation of Point Transformers
+# Pytorch Implementation of Point Transformers
 
 
 
